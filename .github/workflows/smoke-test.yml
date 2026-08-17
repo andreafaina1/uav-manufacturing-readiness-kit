@@ -1,0 +1,21 @@
+name: Smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile app
+        run: python -m py_compile app/app.py app/model.py
+      - name: Import model
+        run: python -c "import sys; sys.path.insert(0, 'app'); import model; print(model.readiness_band(75))"
