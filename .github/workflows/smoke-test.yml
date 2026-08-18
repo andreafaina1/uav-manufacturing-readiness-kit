@@ -16,6 +16,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
       - name: Compile app
-        run: python -m py_compile app/app.py app/model.py app/lean.py app/ai_assistant.py
+        run: python -m py_compile app/app.py app/model.py app/lean.py app/ai_assistant.py app/feedback.py
       - name: Import deterministic modules
-        run: python -c "import sys; sys.path.insert(0, 'app'); import model, lean, ai_assistant; print(model.readiness_band(75)); print(len(lean.WASTE_LENSES)); print(ai_assistant.get_ai_config({})['model'])"
+        run: python -c "import sys; sys.path.insert(0, 'app'); import model, lean, ai_assistant, feedback; print(model.readiness_band(75)); print(len(lean.WASTE_LENSES)); print(ai_assistant.get_ai_config({})['model']); print(feedback.get_feedback_config({})['table'])"
