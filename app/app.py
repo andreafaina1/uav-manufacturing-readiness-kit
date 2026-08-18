@@ -1,12 +1,16 @@
 import json
+import uuid
 from datetime import date
 
 import pandas as pd
 import streamlit as st
 
 from ai_assistant import answer_question, get_ai_config, synthesize
+from feedback import get_feedback_config, submit_feedback
 from lean import MVPS_GATES, SIX_S, WASTE_LENSES, lean_actions, lean_readiness, top_wastes
 from model import DIMENSIONS, QUESTIONS, SAMPLE_STEPS, capacity, dimension_scores, readiness_band, recommendations, signal, weighted_score
+
+APP_VERSION = "0.1.2"
 
 st.set_page_config(page_title="UAV Manufacturing Readiness Kit", page_icon="🛠️", layout="wide")
 
@@ -30,9 +34,137 @@ if "ai_summary" not in st.session_state:
     st.session_state.ai_summary = ""
 if "ai_chat" not in st.session_state:
     st.session_state.ai_chat = []
+if "feedback_session_id" not in st.session_state:
+    st.session_state.feedback_session_id = str(uuid.uuid4())
+if "feedback_role" not in st.session_state:
+    st.session_state.feedback_role = "Prefer not to say"
+if "feedback_success" not in st.session_state:
+    st.session_state.feedback_success = False
+if "usefulness_submitted" not in st.session_state:
+    st.session_state.usefulness_submitted = False
+
+
+def feedback_config():
+    try:
+        return get_feedback_config(st.secrets)
+    except Exception:
+        return get_feedback_config({})
+
+
+def feedback_payload(**kwargs):
+    payload = {
+        "app_version": APP_VERSION,
+        "source": "streamlit_app",
+        "session_id": st.session_state.feedback_session_id,
+        "assessment_stage": kwargs.get("assessment_stage"),
+        "role": kwargs.get("role"),
+        "rating": kwargs.get("rating"),
+        "assessment_useful": kwargs.get("assessment_useful"),
+        "feedback_type": kwargs.get("feedback_type"),
+        "comment": kwargs.get("comment"),
+        "improvement_request": kwargs.get("improvement_request"),
+        "metadata": kwargs.get("metadata", {}),
+    }
+    return payload
+
+
+@st.dialog("Share feedback", width="large")
+def feedback_dialog():
+    st.caption("Help improve the Manufacturing Scale-up Preflight. Please keep feedback non-sensitive and non-proprietary.")
+    with st.form("feedback_form"):
+        role_options = [
+            "Prefer not to say",
+            "Founder / CEO",
+            "Operations",
+            "Manufacturing / Industrialization",
+            "Engineering",
+            "Quality",
+            "Supply Chain",
+            "Investor",
+            "Advisor / Consultant",
+            "Other",
+        ]
+        stage_options = [
+            "General",
+            "Assessment",
+            "Capacity",
+            "Lean cell",
+            "AI coach",
+            "Actions",
+            "Report",
+            "Documentation / methodology",
+        ]
+        role = st.selectbox(
+            "Your role (optional)",
+            role_options,
+            index=role_options.index(st.session_state.feedback_role)
+            if st.session_state.feedback_role in role_options
+            else 0,
+        )
+        stage = st.selectbox("Which part are you commenting on?", stage_options)
+        rating = st.select_slider(
+            "Overall rating",
+            options=[1, 2, 3, 4, 5],
+            value=4,
+            format_func=lambda x: f"{'★' * x}{'☆' * (5 - x)}",
+        )
+        feedback_type = st.selectbox(
+            "Feedback type",
+            ["Useful insight", "Confusing / unclear", "Missing feature", "Bug", "Methodology", "Other"],
+        )
+        comment = st.text_area(
+            "Your feedback",
+            height=120,
+            placeholder="What worked well, what was confusing, or what problem did you encounter?",
+        )
+        improvement = st.text_area(
+            "What would make this tool more useful for your team? (optional)",
+            height=90,
+            placeholder="Example: add supplier-capacity guidance or a clearer executive report.",
+        )
+        safe = st.checkbox(
+            "I confirm this feedback contains no sensitive, classified, export-controlled or proprietary information."
+        )
+        submitted = st.form_submit_button("Submit feedback", type="primary", use_container_width=True)
+
+    if submitted:
+        if not comment.strip() and not improvement.strip():
+            st.error("Please add a short comment or improvement suggestion.")
+            return
+        if not safe:
+            st.error("Please confirm the feedback is appropriate to submit.")
+            return
+        config = feedback_config()
+        if not config.get("url") or not config.get("key"):
+            st.error("Feedback collection is not configured yet. Please try again later.")
+            return
+
+        payload = feedback_payload(
+            assessment_stage=stage,
+            role=None if role == "Prefer not to say" else role,
+            rating=rating,
+            feedback_type=feedback_type,
+            comment=comment.strip() or None,
+            improvement_request=improvement.strip() or None,
+            metadata={"entry_point": "sidebar"},
+        )
+        try:
+            submit_feedback(payload, config)
+        except Exception as exc:
+            st.error(f"Feedback could not be submitted: {exc}")
+            return
+
+        st.session_state.feedback_role = role
+        st.session_state.feedback_success = True
+        st.rerun()
+
+
+if st.session_state.feedback_success:
+    st.toast("Thanks — your feedback was recorded.")
+    st.session_state.feedback_success = False
 
 st.title("Manufacturing Scale-up Preflight")
-st.caption("UAV Manufacturing Readiness & Scale-up Kit · v0.1.1 · prototype → repeatable batches → scalable production")
+st.caption(f"UAV Manufacturing Readiness & Scale-up Kit · v{APP_VERSION} · prototype → repeatable batches → scalable production")
 st.markdown("**What breaks first when you move from a working prototype toward 10, 50 or 100 units?**")
 
 with st.expander("See the assessment flow before you start", expanded=True):
@@ -73,6 +205,10 @@ with st.sidebar:
     target = st.number_input("Next target units / period", min_value=1, value=50)
     period = st.selectbox("Period", ["month", "week"])
     st.info("Use anonymized, high-level production information only. Do not enter sensitive, classified, export-controlled or proprietary technical details.")
+    st.divider()
+    if st.button("💬 Give feedback", use_container_width=True):
+        feedback_dialog()
+    st.caption("Feedback is stored separately from assessment data.")
 
 assessment_tab, capacity_tab, lean_tab, ai_tab, actions_tab, report_tab, about_tab = st.tabs([
     "1 · Assessment", "2 · Capacity", "3 · Lean cell", "4 · AI coach", "5 · Actions", "6 · Report", "7 · About"
@@ -346,6 +482,41 @@ This is a lightweight operational readiness screen, not a formal certification o
     payload = json.dumps(context, indent=2, default=str)
     st.download_button("Download assessment data (.json)", payload, file_name="uav_manufacturing_readiness_assessment.json", mime="application/json", use_container_width=True)
 
+    st.divider()
+    st.markdown("### Was this assessment useful?")
+    st.caption("A one-click signal helps prioritize improvements. This does not save your assessment data.")
+    if st.session_state.usefulness_submitted:
+        st.success("Thanks — usefulness feedback recorded for this session.")
+    else:
+        usefulness = st.selectbox(
+            "Usefulness",
+            ["Select an option", "Yes", "Partly", "No"],
+            label_visibility="collapsed",
+            key="assessment_usefulness",
+        )
+        if st.button("Submit usefulness feedback", use_container_width=True):
+            if usefulness == "Select an option":
+                st.warning("Please select Yes, Partly or No.")
+            else:
+                config = feedback_config()
+                if not config.get("url") or not config.get("key"):
+                    st.error("Feedback collection is not configured yet.")
+                else:
+                    payload = feedback_payload(
+                        assessment_stage="Report",
+                        role=None if st.session_state.feedback_role == "Prefer not to say" else st.session_state.feedback_role,
+                        assessment_useful=usefulness.lower(),
+                        feedback_type="assessment_usefulness",
+                        metadata={"entry_point": "post_report"},
+                    )
+                    try:
+                        submit_feedback(payload, config)
+                    except Exception as exc:
+                        st.error(f"Feedback could not be submitted: {exc}")
+                    else:
+                        st.session_state.usefulness_submitted = True
+                        st.rerun()
+
 with about_tab:
     st.subheader("Method and guardrails")
     st.markdown("""
@@ -356,6 +527,8 @@ with about_tab:
 **Lean terminology:** the app uses the common eight DOWNTIME wastes and adds two explicit hardware-scale-up lenses: safety/ergonomics exposure and information/configuration loss. These two are extensions, not claimed as universally canonical Lean wastes.
 
 **AI role:** AI never determines the numeric score or capacity math. It is an optional synthesis layer for comments and existing metrics. The app works without AI.
+
+**Feedback:** optional product feedback is stored separately from assessment data. The feedback database does not automatically receive readiness answers, capacity inputs or technical notes.
 
 The app does not replace formal certification, quality-system, regulatory, EHS, information-security or compliance reviews.
 """)
